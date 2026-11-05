@@ -142,16 +142,20 @@ html,body{width:100%;height:100%;overflow:hidden;background:#002855}
     <label>Habitaciones (nombre y precio en dólares)</label>
     <div id="e-rooms"></div>
     <button class="add" onclick="addFila()">➕ Agregar habitación</button>
+    <label>Tasa automática desde internet</label>
+    <label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin:4px 0 6px"><input type="checkbox" id="e-autotasa" style="width:auto;margin:0" onchange="cambiarAutoTasa(this.checked)"> Traer la tasa del BCV sola (dólar y euro)</label>
+    <div class="hint">Si lo dejas marcado, el cartel baja solo la tasa del BCV cada 2 horas. Si lo desmarcas, se queda fijo con la tasa que escribas abajo.</div>
     <label>Tasa de respaldo (si no hay internet)</label>
     <input id="e-tasa" type="number" step="0.01" placeholder="888.12">
-    <div class="hint">Normalmente la tasa se baja sola del BCV. Esto es solo por si falla el internet.</div>
+    <input id="e-tasaeur" type="number" step="0.01" placeholder="Euro (opcional)">
+    <div class="hint">Normalmente la tasa se baja sola del BCV. Esto es solo por si falla el internet. La del euro es opcional: si la deja vacía, se muestra la del BCV; si el BCV la manda mala, se conserva la última buena.</div>
     <button class="save" onclick="guardarCfg()">💾 Guardar</button>
     <button class="close" onclick="cerrarEditor()">Cerrar</button>
   </div>
 </div>
 <script>
 /* ===== Config ===== */
-function defCfg(){return {hotel:'HOTEL CITY',tasa:888.12,logo:'',logoSize:13,colTa:'#002855',colTf:'#f4f7fc',rooms:[
+function defCfg(){return {hotel:'HOTEL CITY',tasa:888.12,tasaEur:0,fechaUsd:'',fechaEur:'',autoTasa:true,logo:'',logoSize:13,colTa:'#002855',colTf:'#f4f7fc',rooms:[
   {n:'Matrimonial',usd:60},
   {n:'Doble (cama individual)',usd:65},
   {n:'Doble (cama matrimonial)',usd:75},
@@ -162,6 +166,7 @@ let cfg=defCfg();
 function loadCfg(){try{const d=JSON.parse(localStorage.getItem('tarifarioCfg')||'null'); if(d)cfg=Object.assign(defCfg(),d);}catch(e){}}
 function saveLocal(){localStorage.setItem('tarifarioCfg',JSON.stringify(cfg));}
 let tasaActual=cfg.tasa;
+let tasaEur=Number(cfg.tasaEur)||0;
 /* ===== Formato ===== */
 function fmtBs(v){return 'Bs. '+Number(v).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function fmtUsd(v){return '$'+Number(v).toLocaleString('es-VE',{minimumFractionDigits:0,maximumFractionDigits:0});}
@@ -179,8 +184,19 @@ function render(){
     const bs=(Number(r.usd)||0)*tasaActual;
     b.innerHTML+='<tr><td class="hab">'+esc(r.n)+'</td><td class="usd">'+fmtUsd(r.usd)+'</td><td class="bs">'+fmtBs(bs)+'</td></tr>';
   });
-  document.getElementById('pie-tasa').textContent='Tasa BCV: '+fmtBs(tasaActual);
+  const f=cfg.fechaUsd||'';
+  document.getElementById('pie-tasa').textContent='Tasa BCV: '+fmtBs(tasaActual)+(f?('  \u00b7  '+f):'');
 }
+/* ===== Tasa BCV: una sola tasa (el euro puede fallar sin romper el dolar) ===== */
+function autoTasaActiva(){return cfg.autoTasa!==false;}
+function fechaHoyVE(){return new Date().toLocaleDateString('es-VE');}
+async function traerTasa(url){
+  const r=await fetch(url,{cache:'no-store'});
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  const d=await r.json();
+  return {v:Number(d&&d.promedio)||0, fecha:(d&&d.fechaActualizacion)?fmtFecha(d.fechaActualizacion):''};
+}
+pintarTasas();
 /* ===== Colores ===== */
 const PALETAS=[
   {ta:'#002855',tf:'#f4f7fc'},
@@ -198,32 +214,27 @@ function elegirPaleta(i){const p=PALETAS[i]; cfg.colTa=p.ta; cfg.colTf=p.tf; apl
 function cambiarColor(k,v){if(k==='ta')cfg.colTa=v; else cfg.colTf=v; aplicarColores(); pintarPaletas();}
 /* ===== Tasa BCV ===== */
 async function sincronizar(){
-  try{
-    const [ru,re]=await Promise.all([
-      fetch('https://ve.dolarapi.com/v1/dolares/oficial'),
-      fetch('https://ve.dolarapi.com/v1/euros/oficial')
-    ]);
-    if(!ru.ok||!re.ok)throw 0;
-    const du=await ru.json(), de=await re.json();
-    const usd=du.promedio, eur=de.promedio;
-    if(!usd)throw 0;
-    tasaActual=usd;
-    document.getElementById('tasa-usd').textContent=fmtBs(usd);
-    document.getElementById('tasa-eur').textContent=eur?fmtBs(eur):'--';
-    document.getElementById('fecha-bcv').textContent=fmtFecha(du.fechaActualizacion);
-    cfg.tasa=usd; saveLocal();
-    render();
-  }catch(e){
-    tasaActual=cfg.tasa||888.12;
-    document.getElementById('tasa-usd').textContent=fmtBs(tasaActual);
-    document.getElementById('tasa-eur').textContent='--';
-    document.getElementById('fecha-bcv').textContent=new Date().toLocaleDateString('es-VE');
-    render();
-  }
+  if(!autoTasaActiva()){tasaActual=Number(cfg.tasa)||888.12; tasaEur=Number(cfg.tasaEur)||0; pintarTasas(); return;}
+  try{const usd=await traerTasa('https://ve.dolarapi.com/v1/dolares/oficial');
+    if(usd.v>0){tasaActual=usd.v; cfg.tasa=usd.v; cfg.fechaUsd=usd.fecha; saveLocal();}
+  }catch(e){tasaActual=Number(cfg.tasa)||888.12;}
+  try{const eur=await traerTasa('https://ve.dolarapi.com/v1/euros/oficial');
+    if(eur.v>10){tasaEur=eur.v; cfg.tasaEur=eur.v; cfg.fechaEur=eur.fecha; saveLocal();}
+  }catch(e){}
+  pintarTasas();
+}
+/* Marca o quita la bajada automática de la tasa desde internet */
+function cambiarAutoTasa(v){cfg.autoTasa=!!v; saveLocal(); if(cfg.autoTasa)sincronizar();}
+/* Pinta las tasas y redibuja el tarifario. Euro malo -> se conserva el ultimo bueno */
+function pintarTasas(){
+  document.getElementById('tasa-usd').textContent=fmtBs(tasaActual);
+  document.getElementById('tasa-eur').textContent=(Number(tasaEur)>10)?fmtBs(tasaEur):'--';
+  document.getElementById('fecha-bcv').textContent=cfg.fechaUsd||new Date().toLocaleDateString('es-VE');
+  render();
 }
 /* ===== Editor ===== */
 function filaHTML(r,i){return '<div class="rowr" style="margin-bottom:8px"><div class="f1"><input value="'+esc(r.n)+'" data-k="n" data-i="'+i+'"></div><div class="f2"><input type="number" step="1" value="'+(r.usd)+'" data-k="usd" data-i="'+i+'"></div><button class="del" onclick="delFila('+i+')">\uD83D\uDDD1\uFE0F</button></div>';}
-function pintarEditor(){document.getElementById('e-tasa').value=cfg.tasa||''; document.getElementById('e-rooms').innerHTML=cfg.rooms.map((r,i)=>filaHTML(r,i)).join(''); pintarLogo(); pintarPaletas();}
+function pintarEditor(){document.getElementById('e-tasa').value=cfg.tasa||''; document.getElementById('e-tasaeur').value=cfg.tasaEur||''; const ck=document.getElementById('e-autotasa'); if(ck)ck.checked=autoTasaActiva(); document.getElementById('e-rooms').innerHTML=cfg.rooms.map((r,i)=>filaHTML(r,i)).join(''); pintarLogo(); pintarPaletas();}
 function pintarLogo(){const box=document.getElementById('e-logo-box'); if(cfg.logo){box.style.display='block'; document.getElementById('e-logo-prev').src=cfg.logo; document.getElementById('e-logo-size').value=cfg.logoSize||13;}else{box.style.display='none';}}
 function subirLogo(ev){const f=ev.target.files&&ev.target.files[0]; if(!f)return; const d=leerEditor(); cfg.hotel=d.hotel; cfg.rooms=d.rooms; const rd=new FileReader(); rd.onload=function(){cfg.logo=rd.result; if(!cfg.logoSize)cfg.logoSize=13; pintarLogo();}; rd.readAsDataURL(f); ev.target.value='';}
 function cambiarTamLogo(v){cfg.logoSize=Number(v)||13; document.getElementById('e-logo-prev').style.maxHeight=(40+cfg.logoSize*2.5)+'px';}
@@ -233,15 +244,16 @@ function addFila(){const d=leerEditor(); cfg.hotel=d.hotel; cfg.rooms=d.rooms; c
 function delFila(i){const d=leerEditor(); cfg.hotel=d.hotel; cfg.rooms=d.rooms; cfg.rooms.splice(i,1); if(!cfg.rooms.length)cfg.rooms.push({n:'Habitaci\u00f3n',usd:0}); pintarEditor();}
 function abrirEditor(){pintarEditor(); document.getElementById('ovl').classList.add('on');}
 function cerrarEditor(){document.getElementById('ovl').classList.remove('on');}
-function guardarCfg(){const d=leerEditor(); cfg.hotel=d.hotel||'HOTEL'; cfg.rooms=d.rooms; const t=Number(document.getElementById('e-tasa').value); if(t>0)cfg.tasa=t; saveLocal(); cerrarEditor(); render();}
+function guardarCfg(){const d=leerEditor(); cfg.hotel=d.hotel||'HOTEL'; cfg.rooms=d.rooms; const t=Number(document.getElementById('e-tasa').value); if(t>0)cfg.tasa=t; const te=Number(document.getElementById('e-tasaeur').value); cfg.tasaEur=(te>0?te:0); tasaEur=cfg.tasaEur; const ck=document.getElementById('e-autotasa'); if(ck)cfg.autoTasa=!!ck.checked; saveLocal(); cerrarEditor(); pintarTasas();}
 /* ===== Pantalla completa ===== */
 function pantallaCompleta(){const el=document.documentElement; if(!document.fullscreenElement){(el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el);}else{(document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document);}}
 /* ===== Init ===== */
 loadCfg();
-tasaActual=cfg.tasa||888.12;
-render();
+tasaActual=Number(cfg.tasa)||888.12;
+tasaEur=Number(cfg.tasaEur)||0;
+pintarTasas();
 sincronizar();
-setInterval(sincronizar,2*60*60*1000);
+setInterval(function(){if(autoTasaActiva())sincronizar();},2*60*60*1000);
 </script>
 </body>
 </html>
